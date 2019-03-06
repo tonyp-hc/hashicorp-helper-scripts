@@ -1,0 +1,11 @@
+{
+  "server": true,
+  "ui": true,
+  "leave_on_terminate": true,
+  "datacenter": "dc1",
+  "data_dir": "/opt/consul",
+  "encrypt": "{{ ENCRYPTION_TOKEN }}",
+  "advertise_addr": "{{ IP_ADDR }}",
+  "client_addr": "0.0.0.0",
+  "log_level": "INFO"
+}
