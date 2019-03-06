@@ -1,0 +1,176 @@
+#!/bin/sh
+#
+# consul - this script manages the consul server
+#
+# chkconfig:   345 96 04
+# processname: consul
+
+### BEGIN INIT INFO
+# Provides:       consul
+# Required-Start: $local_fs $network
+# Required-Stop:  $local_fs $network
+# Default-Start: 3 4 5
+# Default-Stop:  0 1 2 6
+# Short-Description: Manage the consul server
+### END INIT INFO
+
+# Source function library.
+. /etc/rc.d/init.d/functions
+
+# Source networking configuration.
+. /etc/sysconfig/network
+
+# Check that networking is up.
+[ "$NETWORKING" = "no" ] && exit 0
+
+logger() {
+  echo "[$(date '+%Y/%m/%d %H:%M:%S')] $0: $@"
+}
+
+exit_on_error() {
+  logger $@
+  exit 1
+}
+
+# An alternate strategy is to load these variables from external file
+# that you can generate using automation tooling of your choice
+#CONSUL_ENV="/etc/consul.d/consul-env"
+#[ -r "${CONSUL_ENV}" ] && . "${CONSUL_ENV}" || exit_on_error "${CONSUL_ENV} not found!"
+
+CONSUL_USER="consul"
+CONSUL_PROG="consul"
+CONSUL_BIN="/usr/local/bin/${CONSUL_PROG}"
+CONSUL_CONFDIR="/etc/${CONSUL_PROG}.d"
+CONSUL_LOCKFILE="/var/lock/subsys/${CONSUL_PROG}"
+CONSUL_PIDFILE="/var/run/${CONSUL_PROG}.pid"
+CONSUL_LOGFILE="/var/log/${CONSUL_PROG}/${CONSUL_PROG}.log"
+CONSUL_SYSCONFIG="/etc/sysconfig/${CONSUL_PROG}"
+
+# verify that the specified user exists
+id -u "${CONSUL_USER}" > /dev/null || exit_on_error "User ${CONSUL_USER} not found! Please create the ${CONSUL_USER} before running this script."
+
+# verify that the binary is executable
+[ -x "${CONSUL_BIN}" ] || exit_on_error "${CONSUL_BIN} is not executable."
+
+# verify that configuration directory is readable
+[ -r "${CONSUL_CONFDIR}" ] || exit_on_error "${CONSUL_CONFDIR} not accessible!"
+
+# include sysconfig if available
+[ -r "${CONSUL_SYSCONFIG}" ] && . ${CONSUL_SYSCONFIG}
+
+start() {
+  configtest || exit_on_error "Config validation has failed."
+  logger $"Starting ${CONSUL_PROG} . . ."
+
+  # handle leftover pidfiles from dirty exits
+  if [ -f ${CONSUL_PIDFILE} ]; then
+    pid=$(<"${CONSUL_PIDFILE}")
+    if [[ -r /proc/$pid/cmdline ]] && xargs -0l echo < /proc/$pid/cmdline | grep -q "${CONSUL_PROG}"; then
+      exit_on_error "${CONSUL_PROG} is already running."
+    else
+      exit_on_error "${CONSUL_PROG} pidfile exists but ${CONSUL_PROG} is not running. Please safely remove ${CONSUL_PIDFILE}"
+    fi
+  fi
+
+  touch "${CONSUL_PIDFILE}"
+  chown "${CONSUL_USER}" "${CONSUL_PIDFILE}"
+  daemon --user="${CONSUL_USER}" "{ $CONSUL_BIN agent $OPTIONS -config-dir=$CONSUL_CONFDIR &>> $CONSUL_LOGFILE & }; echo \$! >| $CONSUL_PIDFILE"
+
+  RETVAL=$?
+  if [ ${RETVAL} -eq 0 ]; then
+    touch "${CONSUL_LOCKFILE}"
+  fi
+  echo
+  return ${RETVAL}
+}
+
+stop() {
+  logger $"Stopping ${CONSUL_PROG}: "
+  pid=$(<"${CONSUL_PIDFILE}")
+  if [ -n "$pid" ]; then
+    /bin/kill "${pid}" 2>> ${CONSUL_LOGFILE}
+    RETVAL=$?
+    if [ $RETVAL -ne 0 ]; then
+      RETVAL=1
+      action $"Stopping $prog: " /bin/false
+      exit_on_error "Unable to kill ${CONSUL_PROG} successfully."
+    else
+      action $"Stopping $prog: " /bin/true
+    fi
+  else
+    # failed to read pidfile
+    action $"Stopping $prog: " /bin/false
+    exit_on_error "Unable to read pidfile."
+    RETVAL=4
+  fi
+  [ "${RETVAL}" -eq 0 ] && rm -f "${CONSUL_LOCKFILE}"
+  rm -f "${CONSUL_PIDFILE}"
+  return ${RETVAL}
+}
+
+restart() {
+  stop
+  while :
+  do
+      ss -pl | fgrep "((\"${CONSUL_PROG}\"," > /dev/null
+      [ $? -ne 0 ] && break
+      sleep 0.1
+  done
+  start
+}
+
+reload() {
+  echo "Reloading ${CONSUL_PROG}: "
+  killproc -p ${CONSUL_PIDFILE} ${CONSUL_BIN} -HUP
+  echo
+  start
+}
+
+force_reload() {
+  restart
+}
+
+configtest() {
+  sudo -u ${CONSUL_USER} ${CONSUL_BIN} validate ${CONSUL_CONFDIR}
+}
+
+rh_status() {
+  status ${CONSUL_PROG}
+}
+
+rh_status_q() {
+  rh_status >/dev/null 2>&1
+}
+
+case "$1" in
+  start)
+      rh_status_q && exit 0
+      $1
+      ;;
+  stop)
+      rh_status_q || exit 0
+      $1
+      ;;
+  restart)
+      $1
+      ;;
+  reload|force-reload)
+      rh_status_q || exit 7
+      $1
+      ;;
+  status)
+      rh_status
+      ;;
+  condrestart|try-restart)
+      rh_status_q || exit 7
+      restart
+      ;;
+  configtest)
+      $1
+      ;;
+  *)
+      echo $"Usage: $0 {start|stop|status|restart|condrestart|try-restart|reload|force-reload|configtest}"
+      exit 2
+esac
+
+exit $?
