@@ -1,0 +1,180 @@
+#!/bin/sh
+#
+# vault - this script manages the vault server
+#
+# chkconfig:   345 96 04
+# processname: vault
+
+### BEGIN INIT INFO
+# Provides:       vault
+# Required-Start: $local_fs $network
+# Required-Stop:  $local_fs $network
+# Default-Start: 3 4 5
+# Default-Stop:  0 1 2 6
+# Short-Description: Manage the vault server
+### END INIT INFO
+
+# Source function library.
+. /etc/rc.d/init.d/functions
+
+# Source networking configuration.
+. /etc/sysconfig/network
+
+# Check that networking is up.
+[ "$NETWORKING" = "no" ] && exit 0
+
+logger() {
+  echo "[$(date '+%Y/%m/%d %H:%M:%S')] $0: $@"
+}
+
+exit_on_error() {
+  logger $@
+  exit 1
+}
+
+# An alternate strategy is to load these variables from external file
+# that you can generate using automation tooling of your choice
+#VAULT_ENV="/etc/vault.d/vault-env"
+#[ -r "${VAULT_ENV}" ] && . ${VAULT_ENV} || exit_on_error "${VAULT_ENV} not found!"
+
+VAULT_USER="vault"
+VAULT_PROG="vault"
+VAULT_BIN="/usr/local/bin/${VAULT_PROG}"
+VAULT_CONF="/etc/${VAULT_PROG}.d/${VAULT_PROG}.hcl"
+VAULT_LOCKFILE="/var/lock/subsys/${VAULT_PROG}"
+VAULT_PIDFILE="/var/run/${VAULT_PROG}.pid"
+VAULT_LOGFILE="/var/log/${VAULT_PROG}/${VAULT_PROG}.log"
+VAULT_SYSCONFIG="/etc/sysconfig/${VAULT_PROG}"
+
+# verify that the specified user exists
+id -u "${VAULT_USER}" > /dev/null || exit_on_error "User ${VAULT_USER} not found! Please create the ${VAULT_USER} before running this script."
+
+# verify that the binary is executable
+[ -x ${VAULT_BIN} ] || exit_on_error "${VAULT_BIN} is not executable."
+
+# verify that vault configuration is readable
+[ -r "${VAULT_CONF}" ] || exit_on_error "${VAULT_CONF} not accessible!"
+
+# include sysconfig if available 
+[ -r "${VAULT_SYSCONFIG}" ] && . ${VAULT_SYSCONFIG} 
+
+start() {
+  logger "Starting ${VAULT_PROG} . . ."
+
+  # handle leftover pidfiles from dirty exits
+  if [ -f ${VAULT_PIDFILE} ]; then
+    pid=$(<"${VAULT_PIDFILE}")
+    if [[ -r /proc/$pid/cmdline ]] && xargs -0l echo < /proc/$pid/cmdline | grep -q "${VAULT_PROG}"; then
+      exit_on_error "${VAULT_PROG} is already running." 
+    else
+      exit_on_error "${VAULT_PROG} pidfile exists but ${VAULT_PROG} is not running. Please safely remove ${VAULT_PIDFILE}"
+    fi
+  fi
+
+  touch "${VAULT_PIDFILE}"
+  chown "${VAULT_USER}" "${VAULT_PIDFILE}"
+  daemon --user=${VAULT_USER} "{ $VAULT_BIN server $OPTIONS -config=$VAULT_CONF &>> $VAULT_LOGFILE & }; echo \$! >| $VAULT_PIDFILE"
+
+  RETVAL=$?
+  if [ ${RETVAL} -eq 0 ]; then
+      touch ${VAULT_LOCKFILE}
+      unseal
+  fi
+  echo
+  return ${RETVAL}
+}
+
+stop() {
+  logger $"Stopping ${VAULT_PROG}: "
+  pid=$(<"${VAULT_PIDFILE}")
+  if [ -n "$pid" ]; then
+    /bin/kill "${pid}" 2>> ${VAULT_LOGFILE}
+    #killproc -p ${VAULT_PIDFILE} ${VAULT_BIN} -INT 2>> ${VAULT_LOGFILE}
+    RETVAL=$?
+    if [ $RETVAL -ne 0 ]; then
+      RETVAL=1
+      action $"Stopping $prog: " /bin/false
+      exit_on_error "Unable to kill ${CONSUL_PROG} successfully."
+    else
+      action $"Stopping $prog: " /bin/true
+    fi
+  else
+    # failed to read pidfile
+    action $"Stopping $prog: " /bin/false
+    exit_on_error "Unable to read pidfile."
+    RETVAL=4
+  fi
+  [ "${RETVAL}" -eq 0 ] && rm -f "${VAULT_LOCKFILE}"
+  rm -f "${VAULT_PIDFILE}"
+  return ${RETVAL}
+}
+
+restart() {
+  stop
+  start
+}
+
+reload() {
+  echo -n $"Reloading ${VAULT_PROG}: "
+  killproc -p ${VAULT_PIDFILE} ${VAULT_BIN} -HUP
+  echo
+  start
+}
+
+force_reload() {
+  restart
+}
+
+rh_status() {
+  status ${VAULT_PROG}
+}
+
+rh_status_q() {
+  rh_status > /dev/null 2>&1
+}
+
+unseal() {
+  while :
+  do
+      ss -pl | fgrep "((\"${VAULT_PROG}\"," > /dev/null
+      [ $? -eq 0 ] && break
+      sleep 0.1
+  done
+  for key in $KEYS; do ${VAULT_BIN} unseal $CERT $key >> ${VAULT_LOGFILE}; done
+}
+
+seal() {
+  ${VAULT_BIN} seal $CERT >> ${VAULT_LOGFILE}
+}
+
+case "$1" in
+  start)
+      rh_status_q && exit 0
+      $1
+      ;;
+  stop)
+      rh_status_q || exit 0
+      $1
+      ;;
+  restart)
+      $1
+      ;;
+  status)
+      rh_status
+      ;;
+  condrestart|try-restart)
+      rh_status_q || exit 7
+      restart
+      ;;
+  unseal)
+      $1
+      ;;
+  seal)
+      $1
+      ;;
+  *)
+      echo $"Usage: $0 {start|stop|status|restart|condrestart|try-restart|unseal|seal}"
+      exit 2
+esac
+
+exit $?
